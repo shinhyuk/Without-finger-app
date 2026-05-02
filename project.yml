@@ -1,0 +1,23 @@
+name: WithoutFinger
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  WithoutFinger:
+    type: application
+    platform: iOS
+    sources:
+      - path: WithoutFinger
+    info:
+      path: WithoutFinger/Info.plist
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.WithoutFinger
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: WithoutFinger/Info.plist
+        CODE_SIGN_STYLE: Automatic
