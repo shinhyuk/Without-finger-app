@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>2048 · Without Finger</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#faf8ef">
+  <link rel="icon" href="../../icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="setup" class="screen">
+    <div class="setup-inner">
+      <h1>2048</h1>
+      <p class="lead">시선으로 타일 합치기.<br>
+      ← 왼쪽 · → 오른쪽 · ↑ 위 · ↓ 아래</p>
+
+      <button id="startEyeBtn">👁️ 시선 켜고 시작</button>
+      <button id="startTouchBtn" class="secondary">시선 없이 플레이 (스와이프/키보드)</button>
+
+      <a href="../../" class="back-link">← 메인으로</a>
+    </div>
+  </div>
+
+  <div id="game" class="screen hidden">
+    <header>
+      <a href="../../" class="back" aria-label="메인">←</a>
+      <div class="title">2048</div>
+      <button id="restartBtn" aria-label="재시작">↻</button>
+    </header>
+
+    <div class="scores">
+      <div class="score-box">
+        <div class="score-label">점수</div>
+        <div class="score-value" id="score">0</div>
+      </div>
+      <div class="score-box">
+        <div class="score-label">최고</div>
+        <div class="score-value" id="best">0</div>
+      </div>
+    </div>
+
+    <div id="board-wrap">
+      <div id="board"></div>
+      <div id="message" class="hidden">
+        <div id="message-text"></div>
+        <button id="messageBtn">다시 시작</button>
+      </div>
+    </div>
+
+    <div id="hud" class="hidden">
+      <span id="dot"></span>
+      <span id="status">대기</span>
+      <span id="dir">·</span>
+      <button id="exitEyeBtn" aria-label="시선 끄기">⏻</button>
+    </div>
+
+    <video id="cam" playsinline muted autoplay class="hidden"></video>
+  </div>
+
+  <script type="module" src="game.js"></script>
+</body>
+</html>
