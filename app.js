@@ -357,18 +357,29 @@ function triggerNext() {
 function triggerPrev() {
   if (player && typeof player.previousVideo === "function") player.previousVideo();
 }
+// iOS Safari는 YT.Player.setVolume()을 무시함 (OS가 음량 JS 제어 차단).
+// 그래서 위/아래는 음소거 토글로 대체. 하드웨어 음량 버튼은 별개로 동작함.
 function triggerVolUp() {
-  if (!player || typeof player.setVolume !== "function") return;
-  if (typeof player.isMuted === "function" && player.isMuted()) {
-    try { player.unMute(); } catch (_) {}
+  if (!player || typeof player.unMute !== "function") return;
+  try { player.unMute(); } catch (_) {}
+  if (typeof player.setVolume === "function") {
+    try {
+      const cur = typeof player.getVolume === "function" ? player.getVolume() : 0;
+      player.setVolume(Math.min(100, (cur || 0) + 10));
+    } catch (_) {}
   }
-  const cur = typeof player.getVolume === "function" ? player.getVolume() : 50;
-  player.setVolume(Math.min(100, (cur || 0) + 10));
 }
 function triggerVolDown() {
-  if (!player || typeof player.setVolume !== "function") return;
-  const cur = typeof player.getVolume === "function" ? player.getVolume() : 50;
-  player.setVolume(Math.max(0, (cur || 0) - 10));
+  if (!player) return;
+  if (typeof player.setVolume === "function") {
+    try {
+      const cur = typeof player.getVolume === "function" ? player.getVolume() : 100;
+      player.setVolume(Math.max(0, (cur || 0) - 10));
+    } catch (_) {}
+  }
+  if (typeof player.mute === "function") {
+    try { player.mute(); } catch (_) {}
+  }
 }
 
 function cleanup() {

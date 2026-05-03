@@ -1,4 +1,4 @@
-const CACHE = "wf-shell-v5";
+const CACHE = "wf-shell-v6";
 const ASSETS = [
   "./",
   "./index.html",

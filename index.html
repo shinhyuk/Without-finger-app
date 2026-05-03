@@ -9,7 +9,7 @@
        APP_VERSION 바꿀 때마다 다시 발동. sessionStorage flag로 무한루프 방지. -->
   <script>
     (function () {
-      var APP_VERSION = "v5-2026-05-03";
+      var APP_VERSION = "v6-2026-05-03";
       var prev = null;
       try { prev = localStorage.getItem("wf-app-version"); } catch (_) {}
       if (prev === APP_VERSION) return;
@@ -58,7 +58,7 @@
   <section id="setup" class="screen">
     <div class="setup-inner">
       <h1>👁️ Without Finger</h1>
-      <p class="lead">왼쪽 → 이전 영상 · 오른쪽 → 다음 영상<br>위 → 볼륨업 · 아래 → 볼륨다운</p>
+      <p class="lead">왼쪽 → 이전 영상 · 오른쪽 → 다음 영상<br>위 → 음소거 해제 · 아래 → 음소거<br><small style="color:#666">(iOS는 JS로 음량 직접 제어 불가 → 음소거 토글로 대체. 음량은 하드웨어 버튼)</small></p>
 
       <label for="playlistInput">유튜브 재생목록 ID 또는 URL</label>
       <input id="playlistInput" type="text" inputmode="url" autocomplete="off"
@@ -85,7 +85,7 @@
         💡 홈 화면에 추가하면 풀스크린 앱처럼 동작합니다.<br>
         Safari → 공유 → "홈 화면에 추가"
       </small>
-      <small class="version" id="version">v5 · 시선 4방향</small>
+      <small class="version" id="version">v6 · mute 토글</small>
     </div>
   </section>
 
