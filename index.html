@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Without Finger</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WithoutFinger">
+  <meta name="theme-color" content="#000000">
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <section id="setup" class="screen">
+    <div class="setup-inner">
+      <h1>👁️ Without Finger</h1>
+      <p class="lead">시선을 위로 올리면 다음 영상으로 넘어갑니다.</p>
+
+      <label for="playlistInput">유튜브 재생목록 ID 또는 URL</label>
+      <input id="playlistInput" type="text" inputmode="url" autocomplete="off"
+             placeholder="PLxxxxxxxx 또는 youtube.com/playlist?list=...">
+      <small>
+        쇼츠 자체는 임베드가 막혀있어요. 본인 계정에서 재생목록을 만들고
+        "재생목록에 저장"으로 쇼츠들을 추가한 뒤 그 ID를 넣으세요.
+      </small>
+
+      <details>
+        <summary>고급 설정</summary>
+        <div class="row">
+          <label>위로 본다 판정값: <span id="trigVal">0.55</span></label>
+          <input id="trigSlider" type="range" min="0.20" max="0.90" step="0.05" value="0.55">
+        </div>
+        <div class="row">
+          <label>쿨다운 (초): <span id="cdVal">0.7</span></label>
+          <input id="cdSlider" type="range" min="0.2" max="2.0" step="0.1" value="0.7">
+        </div>
+      </details>
+
+      <button id="startBtn">시작 (카메라 권한 필요)</button>
+      <small class="hint">
+        💡 홈 화면에 추가하면 풀스크린 앱처럼 동작합니다.<br>
+        Safari → 공유 → "홈 화면에 추가"
+      </small>
+    </div>
+  </section>
+
+  <section id="player-screen" class="screen hidden">
+    <div id="player"></div>
+
+    <div id="hud">
+      <span id="dot"></span>
+      <span id="status">초기화 중...</span>
+      <span id="raw">up=0.00</span>
+      <button id="toggleBtn" aria-label="ON/OFF">⏸</button>
+      <button id="backBtn" aria-label="이전">←</button>
+      <button id="exitBtn" aria-label="나가기">✕</button>
+    </div>
+
+    <video id="cam" playsinline muted autoplay></video>
+  </section>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

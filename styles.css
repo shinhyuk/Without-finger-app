@@ -1,0 +1,205 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", system-ui, sans-serif;
+  overflow: hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- Setup screen ---------- */
+#setup {
+  padding: max(env(safe-area-inset-top), 24px) 20px max(env(safe-area-inset-bottom), 24px);
+  overflow-y: auto;
+}
+
+.setup-inner {
+  margin: auto;
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+#setup h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.lead {
+  margin: 0 0 8px;
+  color: #aaa;
+}
+
+#setup label {
+  font-size: 13px;
+  color: #ccc;
+}
+
+#setup input[type="text"] {
+  background: #1c1c1e;
+  border: 1px solid #333;
+  color: #fff;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 16px;
+  outline: none;
+}
+
+#setup input[type="text"]:focus {
+  border-color: #0a84ff;
+}
+
+#setup small {
+  color: #888;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hint {
+  text-align: center;
+  margin-top: 4px;
+}
+
+#setup button {
+  background: #0a84ff;
+  color: #fff;
+  border: 0;
+  padding: 14px;
+  border-radius: 12px;
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+#setup button:disabled {
+  background: #333;
+  color: #888;
+}
+
+#setup details {
+  background: #111;
+  border: 1px solid #222;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+#setup details summary {
+  cursor: pointer;
+  font-size: 14px;
+  color: #ccc;
+}
+
+#setup .row {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#setup input[type="range"] {
+  width: 100%;
+  accent-color: #0a84ff;
+}
+
+/* ---------- Player screen ---------- */
+#player-screen {
+  background: #000;
+}
+
+#player {
+  flex: 1;
+  width: 100%;
+  position: relative;
+}
+
+#player iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+#hud {
+  position: absolute;
+  top: max(env(safe-area-inset-top), 8px);
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  z-index: 10;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#status {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+#dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+  transition: background 0.1s;
+}
+
+#dot.active { background: #34c759; }
+
+#raw {
+  font-variant-numeric: tabular-nums;
+  color: #aaa;
+}
+
+#hud button {
+  background: transparent;
+  border: 0;
+  color: #fff;
+  font-size: 14px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+#cam {
+  position: absolute;
+  bottom: max(env(safe-area-inset-bottom), 12px);
+  right: 12px;
+  width: 88px;
+  height: 66px;
+  border-radius: 10px;
+  object-fit: cover;
+  transform: scaleX(-1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 10;
+  background: #111;
+}
