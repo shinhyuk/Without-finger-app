@@ -1,0 +1,19 @@
+{
+  "name": "Without Finger",
+  "short_name": "WithoutFinger",
+  "description": "시선만으로 유튜브 재생목록 다음 영상 넘기기",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
