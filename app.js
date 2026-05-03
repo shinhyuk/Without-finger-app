@@ -31,6 +31,17 @@ let ytApiReady = false;
 let stopFlag = false;
 let lastFrameTs = 0;
 
+// 시선 베이스라인 자동 보정.
+// 카메라 각도/얼굴 비대칭 때문에 "정면 응시" 시 gazeX/gazeY가 0이 아닌 경우가 많음.
+// 특히 Y는 베이스라인이 위쪽으로 치우쳐있으면 위 보기가 임계값 안 넘어 트리거 안 됨.
+// 시작 시 N프레임 평균을 베이스라인으로, 이후 중립 구간에서 천천히 드리프트.
+let baselineX = 0, baselineY = 0;
+let calibFrames = 0;
+const CALIB_FRAMES = 30;
+const BASELINE_ALPHA = 0.01;
+let lastFaceTs = 0;
+const FACE_LOST_RESET_MS = 1500;
+
 const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
 
@@ -267,31 +278,47 @@ function fmtSigned(v) {
 
 function handleResults(results) {
   if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+    if (lastFaceTs > 0 && performance.now() - lastFaceTs > FACE_LOST_RESET_MS) {
+      calibFrames = 0; baselineX = 0; baselineY = 0;
+    }
     rawEl.textContent = "얼굴 미검출";
     dotEl.classList.remove("active");
     return;
   }
+  lastFaceTs = performance.now();
   const lm = results.multiFaceLandmarks[0];
 
   const gL = eyeGaze(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, EYE.L_IRIS_RING, lm);
   const gR = eyeGaze(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, EYE.R_IRIS_RING, lm);
-  const gazeX = (gL.x + gR.x) / 2; // +: 사용자가 왼쪽을 봄 / -: 오른쪽
-  const gazeY = (gL.y + gR.y) / 2; // +: 아래 / -: 위
+  const gazeX = (gL.x + gR.x) / 2; // image 기준 raw 시선 변위
+  const gazeY = (gL.y + gR.y) / 2;
 
-  const absX = Math.abs(gazeX);
-  const absY = Math.abs(gazeY);
+  if (calibFrames < CALIB_FRAMES) {
+    baselineX = (baselineX * calibFrames + gazeX) / (calibFrames + 1);
+    baselineY = (baselineY * calibFrames + gazeY) / (calibFrames + 1);
+    calibFrames++;
+    rawEl.textContent = `정면 응시 보정중 ${calibFrames}/${CALIB_FRAMES}`;
+    dotEl.classList.remove("active");
+    return;
+  }
+
+  // 베이스라인 빼서 "중립 = 0" 좌표계로 변환. +: 사용자가 왼쪽 / 아래.
+  const adjX = gazeX - baselineX;
+  const adjY = gazeY - baselineY;
+  const absX = Math.abs(adjX);
+  const absY = Math.abs(adjY);
 
   // 두 축이 동시에 임계값 넘으면 더 큰 쪽으로만 분기.
   let dir = "·";
   if (absX > absY) {
-    if (gazeX > triggerThreshold) dir = "←";
-    else if (gazeX < -triggerThreshold) dir = "→";
+    if (adjX > triggerThreshold) dir = "←";
+    else if (adjX < -triggerThreshold) dir = "→";
   } else {
-    if (gazeY < -triggerThreshold) dir = "↑";
-    else if (gazeY > triggerThreshold) dir = "↓";
+    if (adjY < -triggerThreshold) dir = "↑";
+    else if (adjY > triggerThreshold) dir = "↓";
   }
 
-  rawEl.textContent = `${fmtSigned(gazeX)} ${fmtSigned(gazeY)} ${dir}`;
+  rawEl.textContent = `${fmtSigned(adjX)} ${fmtSigned(adjY)} ${dir}`;
   dotEl.classList.toggle("active", dir !== "·");
 
   const ts = performance.now();
@@ -305,6 +332,12 @@ function handleResults(results) {
     } else if (dir === "↓" && armedDown) {
       armedDown = false; lastTriggerAt = ts; triggerVolDown();
     }
+  }
+
+  // 중립 구간에서만 베이스라인 천천히 갱신 — 사용자가 시선 유지중일 때 드리프트 방지.
+  if (absX < rearmThreshold && absY < rearmThreshold) {
+    baselineX += BASELINE_ALPHA * adjX;
+    baselineY += BASELINE_ALPHA * adjY;
   }
 
   // 축 별로 중립 복귀 시 재무장.
@@ -374,6 +407,7 @@ function triggerVolDown() {
 
 function cleanup() {
   stopFlag = true;
+  calibFrames = 0; baselineX = 0; baselineY = 0; lastFaceTs = 0;
   if (stream) {
     stream.getTracks().forEach((t) => t.stop());
     stream = null;
