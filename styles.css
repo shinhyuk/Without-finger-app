@@ -143,18 +143,27 @@ html, body {
 #hud {
   position: absolute;
   top: max(env(safe-area-inset-top), 8px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 8px;
+  right: 8px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: rgba(0, 0, 0, 0.7);
-  padding: 8px 14px;
+  padding: 6px 12px;
   border-radius: 999px;
   font-size: 12px;
   z-index: 10;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#status {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 #dot {
