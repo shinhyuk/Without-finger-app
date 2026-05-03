@@ -21,11 +21,11 @@ const camEl = $("cam");
 let faceMesh = null;
 let player = null;
 let stream = null;
-let armed = true;
 let enabled = true;
-let lastSwipeAt = 0;
-let triggerThreshold = 0.55;
-const rearmThreshold = 0.20;
+let armedLeft = true, armedRight = true, armedUp = true, armedDown = true;
+let lastTriggerAt = 0;
+let triggerThreshold = 0.35;
+const rearmThreshold = 0.15;
 let cooldownMs = 700;
 let ytApiReady = false;
 let stopFlag = false;
@@ -34,11 +34,12 @@ let lastFrameTs = 0;
 const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
 
-// MediaPipe FaceMesh refineLandmarks=true 시 인덱스
-// 좌안: top=159, bottom=145, iris=468 / 우안: top=386, bottom=374, iris=473
+// MediaPipe FaceMesh refineLandmarks=true 인덱스
 const EYE = {
-  leftIris: 468, leftTop: 159, leftBottom: 145,
-  rightIris: 473, rightTop: 386, rightBottom: 374,
+  // 좌안 (사용자 왼쪽 눈)
+  L_OUTER: 33, L_INNER: 133, L_TOP: 159, L_BOT: 145, L_IRIS: 468,
+  // 우안
+  R_OUTER: 263, R_INNER: 362, R_TOP: 386, R_BOT: 374, R_IRIS: 473,
 };
 
 // ---------- YouTube IFrame ----------
@@ -61,7 +62,8 @@ function waitForYT() {
 }
 
 // ---------- Settings ----------
-const SETTINGS_KEY = "wf-settings-v1";
+// v2: 시선 명령 매핑 변경 (좌/우=영상, 상/하=볼륨) → 임계값 스케일 다름
+const SETTINGS_KEY = "wf-settings-v2";
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -237,6 +239,28 @@ async function initFaceMesh() {
   await withTimeout(faceMesh.send({ image: camEl }), 60000, "FaceMesh 첫 추론");
 }
 
+// 한 눈에 대해 (iris - 중심) / 반축길이 = -1..+1 정규 변위.
+// x: 카메라 image 좌표는 mirror된 사용자 시선과 반대지만 좌/우안 모두
+//    "사용자가 왼쪽을 보면" iris가 image의 더 큰 x로 이동 → disp 양수.
+function dispX(outerIdx, innerIdx, irisIdx, lm) {
+  const a = lm[outerIdx].x, b = lm[innerIdx].x;
+  const center = (a + b) / 2;
+  const half = Math.abs(a - b) / 2;
+  if (half < 0.001) return 0;
+  return (lm[irisIdx].x - center) / half;
+}
+function dispY(topIdx, botIdx, irisIdx, lm) {
+  const a = lm[topIdx].y, b = lm[botIdx].y;
+  const center = (a + b) / 2;
+  const half = Math.abs(b - a) / 2;
+  if (half < 0.001) return 0;
+  return (lm[irisIdx].y - center) / half;
+}
+
+function fmtSigned(v) {
+  return (v >= 0 ? "+" : "") + v.toFixed(2);
+}
+
 function handleResults(results) {
   if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
     rawEl.textContent = "얼굴 미검출";
@@ -245,33 +269,51 @@ function handleResults(results) {
   }
   const lm = results.multiFaceLandmarks[0];
 
-  const lEyeH = lm[EYE.leftBottom].y - lm[EYE.leftTop].y;
-  const rEyeH = lm[EYE.rightBottom].y - lm[EYE.rightTop].y;
-  if (lEyeH < 0.001 || rEyeH < 0.001) {
-    rawEl.textContent = "눈 측정 불가";
-    return;
+  const dxL = dispX(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm);
+  const dxR = dispX(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm);
+  const gazeX = (dxL + dxR) / 2; // +: 사용자가 왼쪽을 봄 / -: 오른쪽
+
+  const dyL = dispY(EYE.L_TOP, EYE.L_BOT, EYE.L_IRIS, lm);
+  const dyR = dispY(EYE.R_TOP, EYE.R_BOT, EYE.R_IRIS, lm);
+  const gazeY = (dyL + dyR) / 2; // +: 아래 / -: 위
+
+  const absX = Math.abs(gazeX);
+  const absY = Math.abs(gazeY);
+
+  // 두 축이 동시에 임계값 넘으면 더 큰 쪽으로만 분기.
+  let dir = "·";
+  if (absX > absY) {
+    if (gazeX > triggerThreshold) dir = "←";
+    else if (gazeX < -triggerThreshold) dir = "→";
+  } else {
+    if (gazeY < -triggerThreshold) dir = "↑";
+    else if (gazeY > triggerThreshold) dir = "↓";
   }
 
-  const lRatio = (lm[EYE.leftIris].y - lm[EYE.leftTop].y) / lEyeH;
-  const rRatio = (lm[EYE.rightIris].y - lm[EYE.rightTop].y) / rEyeH;
-  const ratio = (lRatio + rRatio) / 2;
+  rawEl.textContent = `${fmtSigned(gazeX)} ${fmtSigned(gazeY)} ${dir}`;
+  dotEl.classList.toggle("active", dir !== "·");
 
-  // ratio: 0=눈동자가 눈 위쪽, 1=아래쪽, ~0.5 중립
-  // upScore 0~1 정규화. (0.5 - ratio) * 2.5 → 시선 살짝만 위로 가도 0.5 넘게.
-  const upScore = Math.max(0, Math.min(1, (0.5 - ratio) * 2.5));
-
-  rawEl.textContent = "up=" + upScore.toFixed(2);
-  dotEl.classList.toggle("active", upScore > triggerThreshold);
-
-  if (enabled && armed && upScore > triggerThreshold) {
-    armed = false;
-    const now = performance.now();
-    if (now - lastSwipeAt > cooldownMs) {
-      lastSwipeAt = now;
-      triggerNext();
+  const ts = performance.now();
+  if (enabled && ts - lastTriggerAt > cooldownMs) {
+    if (dir === "←" && armedLeft) {
+      armedLeft = false; lastTriggerAt = ts; triggerPrev();
+    } else if (dir === "→" && armedRight) {
+      armedRight = false; lastTriggerAt = ts; triggerNext();
+    } else if (dir === "↑" && armedUp) {
+      armedUp = false; lastTriggerAt = ts; triggerVolUp();
+    } else if (dir === "↓" && armedDown) {
+      armedDown = false; lastTriggerAt = ts; triggerVolDown();
     }
-  } else if (!armed && upScore < rearmThreshold) {
-    armed = true;
+  }
+
+  // 축 별로 중립 복귀 시 재무장.
+  if (absX < rearmThreshold) {
+    armedLeft = true;
+    armedRight = true;
+  }
+  if (absY < rearmThreshold) {
+    armedUp = true;
+    armedDown = true;
   }
 }
 
@@ -311,6 +353,22 @@ function initPlayer(playlistId) {
 
 function triggerNext() {
   if (player && typeof player.nextVideo === "function") player.nextVideo();
+}
+function triggerPrev() {
+  if (player && typeof player.previousVideo === "function") player.previousVideo();
+}
+function triggerVolUp() {
+  if (!player || typeof player.setVolume !== "function") return;
+  if (typeof player.isMuted === "function" && player.isMuted()) {
+    try { player.unMute(); } catch (_) {}
+  }
+  const cur = typeof player.getVolume === "function" ? player.getVolume() : 50;
+  player.setVolume(Math.min(100, (cur || 0) + 10));
+}
+function triggerVolDown() {
+  if (!player || typeof player.setVolume !== "function") return;
+  const cur = typeof player.getVolume === "function" ? player.getVolume() : 50;
+  player.setVolume(Math.max(0, (cur || 0) - 10));
 }
 
 function cleanup() {

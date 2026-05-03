@@ -9,7 +9,7 @@
        APP_VERSION 바꿀 때마다 다시 발동. sessionStorage flag로 무한루프 방지. -->
   <script>
     (function () {
-      var APP_VERSION = "v4-2026-05-03";
+      var APP_VERSION = "v5-2026-05-03";
       var prev = null;
       try { prev = localStorage.getItem("wf-app-version"); } catch (_) {}
       if (prev === APP_VERSION) return;
@@ -58,7 +58,7 @@
   <section id="setup" class="screen">
     <div class="setup-inner">
       <h1>👁️ Without Finger</h1>
-      <p class="lead">시선을 위로 올리면 다음 영상으로 넘어갑니다.</p>
+      <p class="lead">왼쪽 → 이전 영상 · 오른쪽 → 다음 영상<br>위 → 볼륨업 · 아래 → 볼륨다운</p>
 
       <label for="playlistInput">유튜브 재생목록 ID 또는 URL</label>
       <input id="playlistInput" type="text" inputmode="url" autocomplete="off"
@@ -71,8 +71,8 @@
       <details>
         <summary>고급 설정</summary>
         <div class="row">
-          <label>위로 본다 판정값: <span id="trigVal">0.55</span></label>
-          <input id="trigSlider" type="range" min="0.20" max="0.90" step="0.05" value="0.55">
+          <label>시선 민감도 (작을수록 민감): <span id="trigVal">0.35</span></label>
+          <input id="trigSlider" type="range" min="0.15" max="0.70" step="0.05" value="0.35">
         </div>
         <div class="row">
           <label>쿨다운 (초): <span id="cdVal">0.7</span></label>
@@ -85,7 +85,7 @@
         💡 홈 화면에 추가하면 풀스크린 앱처럼 동작합니다.<br>
         Safari → 공유 → "홈 화면에 추가"
       </small>
-      <small class="version" id="version">v4</small>
+      <small class="version" id="version">v5 · 시선 4방향</small>
     </div>
   </section>
 
