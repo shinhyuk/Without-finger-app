@@ -1,14 +1,6 @@
-import {
-  FaceLandmarker,
-  FilesetResolver,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs";
+// Classic MediaPipe FaceMesh (iOS Safari 호환성 위해 Tasks Vision에서 전환)
+// FaceMesh는 dynamic loadScript로 가져옴 → ES module import 안 씀
 
-const MEDIAPIPE_WASM_BASE =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm";
-const FACE_MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
-
-// ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const setupScreen = $("setup");
 const playerScreen = $("player-screen");
@@ -26,11 +18,9 @@ const backBtn = $("backBtn");
 const exitBtn = $("exitBtn");
 const camEl = $("cam");
 
-// ---------- State ----------
-let faceLandmarker = null;
+let faceMesh = null;
 let player = null;
 let stream = null;
-let rafId = null;
 let armed = true;
 let enabled = true;
 let lastSwipeAt = 0;
@@ -38,26 +28,31 @@ let triggerThreshold = 0.55;
 const rearmThreshold = 0.20;
 let cooldownMs = 700;
 let ytApiReady = false;
-let lastDetectTs = -1;
+let stopFlag = false;
+let lastFrameTs = 0;
 
-// ---------- YouTube IFrame API ----------
-window.onYouTubeIframeAPIReady = () => {
-  ytApiReady = true;
+const MP_VERSION = "0.4.1633559619";
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
+
+// MediaPipe FaceMesh refineLandmarks=true 시 인덱스
+// 좌안: top=159, bottom=145, iris=468 / 우안: top=386, bottom=374, iris=473
+const EYE = {
+  leftIris: 468, leftTop: 159, leftBottom: 145,
+  rightIris: 473, rightTop: 386, rightBottom: 374,
 };
 
+// ---------- YouTube IFrame ----------
+window.onYouTubeIframeAPIReady = () => { ytApiReady = true; };
 function waitForYT() {
+  if (ytApiReady) return Promise.resolve();
   return new Promise((resolve) => {
-    if (ytApiReady) return resolve();
     const t = setInterval(() => {
-      if (ytApiReady) {
-        clearInterval(t);
-        resolve();
-      }
+      if (ytApiReady) { clearInterval(t); resolve(); }
     }, 50);
   });
 }
 
-// ---------- Persisted settings ----------
+// ---------- Settings ----------
 const SETTINGS_KEY = "wf-settings-v1";
 function loadSettings() {
   try {
@@ -78,29 +73,27 @@ function loadSettings() {
   } catch (_) {}
 }
 function saveSettings() {
-  const s = {
-    playlist: playlistInput.value,
-    trigger: triggerThreshold,
-    cooldown: cooldownMs,
-  };
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      playlist: playlistInput.value,
+      trigger: triggerThreshold,
+      cooldown: cooldownMs,
+    }));
   } catch (_) {}
 }
 
-// ---------- UI bindings ----------
 trigSlider.addEventListener("input", () => {
   triggerThreshold = parseFloat(trigSlider.value);
   trigVal.textContent = triggerThreshold.toFixed(2);
   saveSettings();
 });
-
 cdSlider.addEventListener("input", () => {
   cooldownMs = parseFloat(cdSlider.value) * 1000;
   cdVal.textContent = (cooldownMs / 1000).toFixed(1);
   saveSettings();
 });
 
+// ---------- Start flow ----------
 startBtn.addEventListener("click", async () => {
   const pid = extractPlaylistId(playlistInput.value.trim());
   if (!pid) {
@@ -117,15 +110,17 @@ startBtn.addEventListener("click", async () => {
     playerScreen.classList.remove("hidden");
     statusEl.textContent = "초기화 중...";
 
-    // YouTube와 모델을 병렬 로드: 모델이 늦게 떠도 영상은 먼저 재생됨.
     const ytReadyP = waitForYT().then(() => initPlayer(pid));
-    const trackerP = initFaceLandmarker();
+    const trackerP = initFaceMesh();
 
     await ytReadyP;
+    statusEl.textContent = "유튜브 준비됨, 얼굴 인식 로딩...";
+
     await trackerP;
 
     statusEl.textContent = "추적 중";
-    loop();
+    stopFlag = false;
+    requestAnimationFrame(frameLoop);
   } catch (e) {
     const msg = (e?.message || e) + "";
     statusEl.textContent = "오류: " + msg;
@@ -143,13 +138,9 @@ toggleBtn.addEventListener("click", () => {
   enabled = !enabled;
   toggleBtn.textContent = enabled ? "⏸" : "▶";
 });
-
 backBtn.addEventListener("click", () => {
-  if (player && typeof player.previousVideo === "function") {
-    player.previousVideo();
-  }
+  if (player && typeof player.previousVideo === "function") player.previousVideo();
 });
-
 exitBtn.addEventListener("click", () => {
   cleanup();
   setupScreen.classList.remove("hidden");
@@ -157,6 +148,9 @@ exitBtn.addEventListener("click", () => {
   startBtn.disabled = false;
   startBtn.textContent = "시작 (카메라 권한 필요)";
 });
+
+// 카메라 미리보기 탭하면 수동으로 다음 영상 (face tracking 없이도 테스트 가능)
+camEl.addEventListener("click", () => triggerNext());
 
 // ---------- Helpers ----------
 function extractPlaylistId(input) {
@@ -179,87 +173,110 @@ async function initCamera() {
   });
   camEl.srcObject = stream;
   await new Promise((resolve, reject) => {
-    const ok = () => resolve();
-    const fail = () => reject(new Error("카메라 영상 로드 실패"));
-    camEl.addEventListener("loadeddata", ok, { once: true });
-    camEl.addEventListener("error", fail, { once: true });
+    camEl.addEventListener("loadeddata", resolve, { once: true });
+    camEl.addEventListener("error", () => reject(new Error("카메라 로드 실패")), { once: true });
   });
   await camEl.play().catch(() => {});
+  // videoWidth가 0이 아닌 게 보장될 때까지 잠깐 대기
+  for (let i = 0; i < 50 && camEl.videoWidth === 0; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("스크립트 로드 실패: " + src));
+    document.head.appendChild(s);
+  });
 }
 
 function withTimeout(promise, ms, label) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} 타임아웃 (${ms / 1000}s)`));
-    }, ms);
+    const t = setTimeout(() => reject(new Error(`${label} 타임아웃 (${ms / 1000}s)`)), ms);
     promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
     );
   });
 }
 
-async function fetchModelBuffer() {
-  statusEl.textContent = "모델 다운로드 중...";
-  const res = await fetch(FACE_MODEL_URL, { mode: "cors" });
-  if (!res.ok) throw new Error(`모델 HTTP ${res.status}`);
-  const total = parseInt(res.headers.get("content-length") || "0", 10);
-  if (!res.body || !total) {
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
+async function initFaceMesh() {
+  statusEl.textContent = "FaceMesh 스크립트 다운로드...";
+  if (typeof FaceMesh === "undefined") {
+    await withTimeout(loadScript(`${MP_BASE}/face_mesh.js`), 20000, "스크립트");
   }
-  const reader = res.body.getReader();
-  const chunks = [];
-  let received = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    statusEl.textContent =
-      "모델 " + Math.floor((received / total) * 100) + "%";
+  if (typeof FaceMesh === "undefined") {
+    throw new Error("FaceMesh 글로벌이 정의되지 않음");
   }
-  const out = new Uint8Array(received);
-  let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
-  return out;
+
+  statusEl.textContent = "FaceMesh 인스턴스 생성...";
+  faceMesh = new FaceMesh({
+    locateFile: (file) => `${MP_BASE}/${file}`,
+  });
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+  faceMesh.onResults(handleResults);
+
+  statusEl.textContent = "FaceMesh 워밍업 (모델 로딩)...";
+  // 첫 send가 내부적으로 WASM/모델을 로드함 → 완료될 때까지 대기
+  await withTimeout(faceMesh.send({ image: camEl }), 60000, "FaceMesh 첫 추론");
 }
 
-async function initFaceLandmarker() {
-  statusEl.textContent = "WASM 로딩...";
-  const fileset = await withTimeout(
-    FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_BASE),
-    20000,
-    "WASM"
-  );
-
-  const modelBuffer = await withTimeout(fetchModelBuffer(), 60000, "모델 다운로드");
-
-  statusEl.textContent = "엔진 초기화 중...";
-
-  // iOS Safari는 GPU delegate가 hang하는 경우가 있어 CPU 우선.
-  const tryCreate = (delegate) =>
-    withTimeout(
-      FaceLandmarker.createFromOptions(fileset, {
-        baseOptions: {
-          modelAssetBuffer: modelBuffer,
-          delegate,
-        },
-        outputFaceBlendshapes: true,
-        outputFacialTransformationMatrixes: false,
-        runningMode: "VIDEO",
-        numFaces: 1,
-      }),
-      15000,
-      `${delegate} 초기화`
-    );
-
-  try {
-    faceLandmarker = await tryCreate("CPU");
-  } catch (e) {
-    statusEl.textContent = "CPU 실패, GPU 시도...";
-    faceLandmarker = await tryCreate("GPU");
+function handleResults(results) {
+  if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+    rawEl.textContent = "얼굴 미검출";
+    dotEl.classList.remove("active");
+    return;
   }
+  const lm = results.multiFaceLandmarks[0];
+
+  const lEyeH = lm[EYE.leftBottom].y - lm[EYE.leftTop].y;
+  const rEyeH = lm[EYE.rightBottom].y - lm[EYE.rightTop].y;
+  if (lEyeH < 0.001 || rEyeH < 0.001) {
+    rawEl.textContent = "눈 측정 불가";
+    return;
+  }
+
+  const lRatio = (lm[EYE.leftIris].y - lm[EYE.leftTop].y) / lEyeH;
+  const rRatio = (lm[EYE.rightIris].y - lm[EYE.rightTop].y) / rEyeH;
+  const ratio = (lRatio + rRatio) / 2;
+
+  // ratio: 0=눈동자가 눈 위쪽, 1=아래쪽, ~0.5 중립
+  // upScore 0~1 정규화. (0.5 - ratio) * 2.5 → 시선 살짝만 위로 가도 0.5 넘게.
+  const upScore = Math.max(0, Math.min(1, (0.5 - ratio) * 2.5));
+
+  rawEl.textContent = "up=" + upScore.toFixed(2);
+  dotEl.classList.toggle("active", upScore > triggerThreshold);
+
+  if (enabled && armed && upScore > triggerThreshold) {
+    armed = false;
+    const now = performance.now();
+    if (now - lastSwipeAt > cooldownMs) {
+      lastSwipeAt = now;
+      triggerNext();
+    }
+  } else if (!armed && upScore < rearmThreshold) {
+    armed = true;
+  }
+}
+
+async function frameLoop() {
+  if (stopFlag) return;
+  const ts = performance.now();
+  if (ts - lastFrameTs >= 33 && faceMesh && camEl.videoWidth > 0) {
+    lastFrameTs = ts;
+    try {
+      await faceMesh.send({ image: camEl });
+    } catch (_) {}
+  }
+  if (!stopFlag) requestAnimationFrame(frameLoop);
 }
 
 function initPlayer(playlistId) {
@@ -284,85 +301,39 @@ function initPlayer(playlistId) {
   });
 }
 
-function loop() {
-  rafId = requestAnimationFrame(loop);
-  if (!faceLandmarker || !camEl.videoWidth) return;
-
-  const ts = performance.now();
-  if (ts === lastDetectTs) return;
-  lastDetectTs = ts;
-
-  let result;
-  try {
-    result = faceLandmarker.detectForVideo(camEl, ts);
-  } catch (e) {
-    return;
-  }
-
-  if (!result?.faceBlendshapes?.length) {
-    rawEl.textContent = "얼굴 미검출";
-    dotEl.classList.remove("active");
-    return;
-  }
-
-  const cats = result.faceBlendshapes[0].categories;
-  const lookUpL = cats.find((c) => c.categoryName === "eyeLookUpLeft")?.score ?? 0;
-  const lookUpR = cats.find((c) => c.categoryName === "eyeLookUpRight")?.score ?? 0;
-  const value = (lookUpL + lookUpR) / 2;
-
-  rawEl.textContent = "up=" + value.toFixed(2);
-  dotEl.classList.toggle("active", value > triggerThreshold);
-
-  if (enabled && armed && value > triggerThreshold) {
-    armed = false;
-    if (ts - lastSwipeAt > cooldownMs) {
-      lastSwipeAt = ts;
-      triggerNext();
-    }
-  } else if (!armed && value < rearmThreshold) {
-    armed = true;
-  }
-}
-
 function triggerNext() {
-  if (player && typeof player.nextVideo === "function") {
-    player.nextVideo();
-  }
+  if (player && typeof player.nextVideo === "function") player.nextVideo();
 }
 
 function cleanup() {
-  if (rafId) cancelAnimationFrame(rafId);
-  rafId = null;
+  stopFlag = true;
   if (stream) {
     stream.getTracks().forEach((t) => t.stop());
     stream = null;
   }
   if (player && typeof player.destroy === "function") {
-    player.destroy();
+    try { player.destroy(); } catch (_) {}
     player = null;
   }
-  if (faceLandmarker && typeof faceLandmarker.close === "function") {
-    faceLandmarker.close();
-    faceLandmarker = null;
+  if (faceMesh && typeof faceMesh.close === "function") {
+    try { faceMesh.close(); } catch (_) {}
+    faceMesh = null;
   }
 }
 
-// Pause tracking when tab hidden (iOS suspends it anyway).
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  } else if (!document.hidden && faceLandmarker && !rafId) {
-    loop();
+  if (document.hidden) {
+    stopFlag = true;
+  } else if (faceMesh) {
+    stopFlag = false;
+    requestAnimationFrame(frameLoop);
   }
 });
 
-// Service worker
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   });
 }
 
-// Init
 loadSettings();
