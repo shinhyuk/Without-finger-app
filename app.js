@@ -35,10 +35,10 @@ const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
 
 // MediaPipe FaceMesh refineLandmarks=true 인덱스.
-// 윗/아랫눈꺼풀 점은 시선 따라 같이 움직여서 세로 변위 기준으로 못 씀 → corner만 사용.
+// 눈꺼풀 점은 시선 따라 같이 움직여서 세로 기준으로 못 씀 → corner + iris 경계점만 사용.
 const EYE = {
-  L_OUTER: 33, L_INNER: 133, L_IRIS: 468,
-  R_OUTER: 263, R_INNER: 362, R_IRIS: 473,
+  L_OUTER: 33, L_INNER: 133, L_IRIS: 468, L_IRIS_RING: [469, 470, 471, 472],
+  R_OUTER: 263, R_INNER: 362, R_IRIS: 473, R_IRIS_RING: [474, 475, 476, 477],
 };
 
 // ---------- YouTube IFrame ----------
@@ -238,19 +238,27 @@ async function initFaceMesh() {
   await withTimeout(faceMesh.send({ image: camEl }), 60000, "FaceMesh 첫 추론");
 }
 
-// 눈 양 끝(outer/inner corner)의 중점을 안구 중심 기준으로,
-// 두 corner 사이 거리의 절반을 정규화 단위로 사용.
-// 눈꺼풀 점을 안 쓰는 이유: 아래를 볼 때 윗눈꺼풀이 같이 내려와서 "눈 중심"이
-// iris보다 더 내려가 변위 부호가 뒤집히고(↓를 ↑로 오인), 위를 볼 때는 변위가
-// 작아져 임계값을 못 넘김. corner는 시선 따라 안 움직이므로 안정적.
-const Y_GAIN = 1.6; // 세로 iris 가동 범위가 가로보다 좁아서 보정.
-function eyeGaze(outerIdx, innerIdx, irisIdx, lm) {
+// 안구 중심은 눈 양 끝(corner) 중점 — 시선과 무관해서 안정적.
+// X 정규화 단위는 corner 거리의 절반 (눈 폭).
+// Y 정규화 단위는 iris 반지름 — corner 거리는 세로 iris 가동 범위보다 너무 커서
+// 위/아래 변위가 임계값을 못 넘김 (iris 반지름이 세로 운동 한계와 비슷한 스케일).
+function irisRadius(centerIdx, ringIdxs, lm) {
+  const c = lm[centerIdx];
+  let sum = 0;
+  for (const i of ringIdxs) {
+    const p = lm[i];
+    sum += Math.hypot(p.x - c.x, p.y - c.y);
+  }
+  return sum / ringIdxs.length;
+}
+function eyeGaze(outerIdx, innerIdx, irisIdx, ringIdxs, lm) {
   const o = lm[outerIdx], i = lm[innerIdx], r = lm[irisIdx];
   const cx = (o.x + i.x) / 2;
   const cy = (o.y + i.y) / 2;
-  const half = Math.hypot(o.x - i.x, o.y - i.y) / 2;
-  if (half < 0.001) return { x: 0, y: 0 };
-  return { x: (r.x - cx) / half, y: ((r.y - cy) / half) * Y_GAIN };
+  const halfX = Math.hypot(o.x - i.x, o.y - i.y) / 2;
+  const radY = irisRadius(irisIdx, ringIdxs, lm);
+  if (halfX < 0.001 || radY < 0.001) return { x: 0, y: 0 };
+  return { x: (r.x - cx) / halfX, y: (r.y - cy) / radY };
 }
 
 function fmtSigned(v) {
@@ -265,8 +273,8 @@ function handleResults(results) {
   }
   const lm = results.multiFaceLandmarks[0];
 
-  const gL = eyeGaze(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm);
-  const gR = eyeGaze(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm);
+  const gL = eyeGaze(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, EYE.L_IRIS_RING, lm);
+  const gR = eyeGaze(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, EYE.R_IRIS_RING, lm);
   const gazeX = (gL.x + gR.x) / 2; // +: 사용자가 왼쪽을 봄 / -: 오른쪽
   const gazeY = (gL.y + gR.y) / 2; // +: 아래 / -: 위
 
