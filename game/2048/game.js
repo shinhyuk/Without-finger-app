@@ -279,13 +279,20 @@ startEyeBtn.addEventListener("click", async () => {
     onRight: () => handleDirection("right"),
     onUp: () => handleDirection("up"),
     onDown: () => handleDirection("down"),
-    onFrame: (gx, gy, dir) => {
+    onFrame: (dx, dy, dir) => {
       dirEl.textContent = dir;
       dotEl.classList.toggle("active", dir !== "·");
     },
     onStatus: (msg) => {
       statusEl.textContent = msg;
     },
+  });
+
+  // 카메라 미리보기 탭 = 재보정
+  camEl.addEventListener("click", () => {
+    if (tracker) {
+      tracker.recalibrate();
+    }
   });
 
   try {

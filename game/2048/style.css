@@ -48,9 +48,16 @@ html, body {
 }
 
 #setup .lead {
-  margin: 0 0 16px;
+  margin: 0;
   color: #999;
   font-size: 14px;
+  line-height: 1.6;
+}
+
+#setup .tip {
+  margin: 0 0 16px;
+  color: #aaa;
+  font-size: 12px;
   line-height: 1.6;
 }
 

@@ -57,8 +57,13 @@ export class EyeTracker {
   constructor(videoEl, opts = {}) {
     this.videoEl = videoEl;
     this.triggerThreshold = opts.triggerThreshold ?? 0.35;
-    this.rearmThreshold = opts.rearmThreshold ?? 0.15;
-    this.cooldownMs = opts.cooldownMs ?? 700;
+    this.triggerThreshold = opts.triggerThreshold ?? 0.25;
+    this.rearmThreshold = opts.rearmThreshold ?? 0.10;
+    this.cooldownMs = opts.cooldownMs ?? 500;
+    // 사용자가 정지 상태일 때 baseline이 천천히 따라가는 시간 상수.
+    // 5초 → 짧은 시선 이동에는 baseline이 거의 안 움직임.
+    this.baselineTau = opts.baselineTau ?? 5000;
+    this.warmupFrames = opts.warmupFrames ?? 30;
 
     this.onLeft = opts.onLeft ?? noop;
     this.onRight = opts.onRight ?? noop;
@@ -70,16 +75,31 @@ export class EyeTracker {
     this.enabled = true;
     this.faceMesh = null;
     this.stream = null;
-    this.armedLeft = true;
-    this.armedRight = true;
-    this.armedUp = true;
-    this.armedDown = true;
+
+    // 모든 방향이 같은 armed 상태를 공유: 한 번 트리거하면 사용자가
+    // baseline 근처(rearmThreshold 이내)로 돌아와야 다음 트리거가 가능.
+    // 이게 "왔다 갔다" 동작이 양쪽 방향을 동시에 발화시키는 걸 막아준다.
+    this.armed = true;
     this.lastTriggerAt = 0;
     this.stopFlag = false;
     this.lastFrameTs = 0;
+
+    this._baselineSamples = [];
+    this.baselineX = null;
+    this.baselineY = null;
+    this._lastTickTs = 0;
   }
 
   setEnabled(v) { this.enabled = !!v; }
+
+  // 보정 다시 하기 (카메라 위치 바뀜, 자세 바뀜 등에 사용).
+  recalibrate() {
+    this._baselineSamples = [];
+    this.baselineX = null;
+    this.baselineY = null;
+    this.armed = true;
+    this.lastTriggerAt = 0;
+  }
 
   async start() {
     this.onStatus("카메라 시작...");
@@ -149,48 +169,78 @@ export class EyeTracker {
     }
     const lm = results.multiFaceLandmarks[0];
 
-    const dxL = dispX(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm);
-    const dxR = dispX(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm);
-    const gazeX = (dxL + dxR) / 2;
+    const rawX = (
+      dispX(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm) +
+      dispX(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm)
+    ) / 2;
+    const rawY = (
+      dispY(EYE.L_TOP, EYE.L_BOT, EYE.L_IRIS, lm) +
+      dispY(EYE.R_TOP, EYE.R_BOT, EYE.R_IRIS, lm)
+    ) / 2;
 
-    const dyL = dispY(EYE.L_TOP, EYE.L_BOT, EYE.L_IRIS, lm);
-    const dyR = dispY(EYE.R_TOP, EYE.R_BOT, EYE.R_IRIS, lm);
-    const gazeY = (dyL + dyR) / 2;
+    const ts = performance.now();
 
-    const absX = Math.abs(gazeX);
-    const absY = Math.abs(gazeY);
+    // ---- 1) Warmup: 첫 N프레임 평균을 baseline으로 잡음.
+    if (this._baselineSamples.length < this.warmupFrames) {
+      this._baselineSamples.push({ x: rawX, y: rawY });
+      if (this._baselineSamples.length === this.warmupFrames) {
+        const n = this.warmupFrames;
+        this.baselineX = this._baselineSamples.reduce((s, p) => s + p.x, 0) / n;
+        this.baselineY = this._baselineSamples.reduce((s, p) => s + p.y, 0) / n;
+        this.onStatus("추적 중");
+      } else {
+        this.onStatus(`보정 ${this._baselineSamples.length}/${this.warmupFrames} (정면 응시)`);
+      }
+      this.onFrame(0, 0, "·");
+      this._lastTickTs = ts;
+      return;
+    }
+
+    // ---- 2) Baseline 천천히 따라가게 (정지 상태일 때만).
+    // armed=false 동안 (즉 사용자가 일부러 시선을 옮긴 상태) baseline은
+    // 갱신하지 않아서 "원래대로 돌아가는 동작"이 정확히 -delta로 잡혀
+    // 재무장 트리거가 정확히 동작.
+    if (this.armed && this._lastTickTs) {
+      const dt = ts - this._lastTickTs;
+      const alpha = 1 - Math.exp(-dt / this.baselineTau);
+      this.baselineX += alpha * (rawX - this.baselineX);
+      this.baselineY += alpha * (rawY - this.baselineY);
+    }
+    this._lastTickTs = ts;
+
+    // ---- 3) 이동량 (delta from baseline) 으로 방향 판정.
+    const dx = rawX - this.baselineX;
+    const dy = rawY - this.baselineY;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
 
     let dir = "·";
     if (absX > absY) {
-      if (gazeX > this.triggerThreshold) dir = "←";
-      else if (gazeX < -this.triggerThreshold) dir = "→";
+      if (dx > this.triggerThreshold) dir = "←";
+      else if (dx < -this.triggerThreshold) dir = "→";
     } else {
-      if (gazeY < -this.triggerThreshold) dir = "↑";
-      else if (gazeY > this.triggerThreshold) dir = "↓";
+      if (dy < -this.triggerThreshold) dir = "↑";
+      else if (dy > this.triggerThreshold) dir = "↓";
     }
 
-    this.onFrame(gazeX, gazeY, dir);
+    this.onFrame(dx, dy, dir);
 
-    const ts = performance.now();
-    if (this.enabled && ts - this.lastTriggerAt > this.cooldownMs) {
-      if (dir === "←" && this.armedLeft) {
-        this.armedLeft = false; this.lastTriggerAt = ts; this.onLeft();
-      } else if (dir === "→" && this.armedRight) {
-        this.armedRight = false; this.lastTriggerAt = ts; this.onRight();
-      } else if (dir === "↑" && this.armedUp) {
-        this.armedUp = false; this.lastTriggerAt = ts; this.onUp();
-      } else if (dir === "↓" && this.armedDown) {
-        this.armedDown = false; this.lastTriggerAt = ts; this.onDown();
+    // ---- 4) 단일 armed 플래그: 한 번 발화하면 baseline 근처 복귀까지 잠금.
+    // 이게 "look left → return to center"가 right로 잘못 발화되는 걸 막아준다.
+    if (this.enabled && this.armed && ts - this.lastTriggerAt > this.cooldownMs) {
+      if (dir !== "·") {
+        this.armed = false;
+        this.lastTriggerAt = ts;
+        if (dir === "←") this.onLeft();
+        else if (dir === "→") this.onRight();
+        else if (dir === "↑") this.onUp();
+        else if (dir === "↓") this.onDown();
       }
     }
 
-    if (absX < this.rearmThreshold) {
-      this.armedLeft = true;
-      this.armedRight = true;
-    }
-    if (absY < this.rearmThreshold) {
-      this.armedUp = true;
-      this.armedDown = true;
+    // ---- 5) 재무장: 양 축 모두 baseline 근처로 돌아와야 함.
+    if (!this.armed && absX < this.rearmThreshold && absY < this.rearmThreshold) {
+      this.armed = true;
     }
   }
 
