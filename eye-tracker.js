@@ -18,6 +18,8 @@ const EYE = {
   L_OUTER: 33, L_INNER: 133, L_TOP: 159, L_BOT: 145, L_IRIS: 468,
   R_OUTER: 263, R_INNER: 362, R_TOP: 386, R_BOT: 374, R_IRIS: 473,
 };
+// 얼굴 높이 정규화용 (lid-following 무관한 안정적 랜드마크)
+const FACE = { FOREHEAD: 10, CHIN: 152 };
 
 function noop() {}
 
@@ -41,24 +43,41 @@ function withTimeout(promise, ms, label) {
   });
 }
 
+// 가로 시선: 눈 가장자리(외측/내측) 기준 iris 변위. 좌우 안검은 시선 따라
+// 안 움직이므로 이 측정은 안정적.
 function dispX(outer, inner, iris, lm) {
   const a = lm[outer].x, b = lm[inner].x;
   const c = (a + b) / 2, h = Math.abs(a - b) / 2;
   return h < 0.001 ? 0 : (lm[iris].x - c) / h;
 }
 
-function dispY(top, bot, iris, lm) {
-  const a = lm[top].y, b = lm[bot].y;
-  const c = (a + b) / 2, h = Math.abs(b - a) / 2;
-  return h < 0.001 ? 0 : (lm[iris].y - c) / h;
+// 세로 시선: 위쪽 안검(159/386)을 기준으로 쓰면 lid-following 문제 발생.
+// 시선 아래로 내릴 때 위쪽 안검이 따라 내려오면서 iris가 contour 상단에
+// 위치한 것처럼 잡혀 ↑로 잘못 발화됨.
+//
+// 해결: 시선 따라 움직이지 않는 눈 가장자리(canthus) 4점 평균을 기준점으로,
+// 얼굴 높이로 정규화한 iris의 수직 위치 사용.
+function gazeYStable(lm) {
+  const faceH = lm[FACE.CHIN].y - lm[FACE.FOREHEAD].y;
+  if (faceH < 0.001) return 0;
+  const cornersY = (lm[EYE.L_OUTER].y + lm[EYE.L_INNER].y +
+                    lm[EYE.R_OUTER].y + lm[EYE.R_INNER].y) / 4;
+  const irisY = (lm[EYE.L_IRIS].y + lm[EYE.R_IRIS].y) / 2;
+  return (irisY - cornersY) / faceH;
+  // 음수 = iris가 가장자리보다 위 = 시선 위
+  // 양수 = iris가 가장자리보다 아래 = 시선 아래
 }
 
 export class EyeTracker {
   constructor(videoEl, opts = {}) {
     this.videoEl = videoEl;
     this.triggerThreshold = opts.triggerThreshold ?? 0.35;
-    this.triggerThreshold = opts.triggerThreshold ?? 0.25;
-    this.rearmThreshold = opts.rearmThreshold ?? 0.10;
+    // X (가로): dispX 단위(반폭 정규화), Y (세로): face-height 정규화.
+    // 두 축 스케일이 다르므로 분리.
+    this.triggerThresholdX = opts.triggerThresholdX ?? 0.22;
+    this.triggerThresholdY = opts.triggerThresholdY ?? 0.020;
+    this.rearmThresholdX = opts.rearmThresholdX ?? 0.10;
+    this.rearmThresholdY = opts.rearmThresholdY ?? 0.008;
     this.cooldownMs = opts.cooldownMs ?? 500;
     // 사용자가 정지 상태일 때 baseline이 천천히 따라가는 시간 상수.
     // 5초 → 짧은 시선 이동에는 baseline이 거의 안 움직임.
@@ -173,10 +192,7 @@ export class EyeTracker {
       dispX(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm) +
       dispX(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm)
     ) / 2;
-    const rawY = (
-      dispY(EYE.L_TOP, EYE.L_BOT, EYE.L_IRIS, lm) +
-      dispY(EYE.R_TOP, EYE.R_BOT, EYE.R_IRIS, lm)
-    ) / 2;
+    const rawY = gazeYStable(lm);
 
     const ts = performance.now();
 
@@ -214,19 +230,22 @@ export class EyeTracker {
     const absX = Math.abs(dx);
     const absY = Math.abs(dy);
 
+    // X와 Y는 스케일이 다르므로 임계값으로 정규화한 강도로 비교.
+    const sX = absX / this.triggerThresholdX;
+    const sY = absY / this.triggerThresholdY;
+
     let dir = "·";
-    if (absX > absY) {
-      if (dx > this.triggerThreshold) dir = "←";
-      else if (dx < -this.triggerThreshold) dir = "→";
+    if (sX > sY) {
+      if (dx > this.triggerThresholdX) dir = "←";
+      else if (dx < -this.triggerThresholdX) dir = "→";
     } else {
-      if (dy < -this.triggerThreshold) dir = "↑";
-      else if (dy > this.triggerThreshold) dir = "↓";
+      if (dy < -this.triggerThresholdY) dir = "↑";
+      else if (dy > this.triggerThresholdY) dir = "↓";
     }
 
     this.onFrame(dx, dy, dir);
 
     // ---- 4) 단일 armed 플래그: 한 번 발화하면 baseline 근처 복귀까지 잠금.
-    // 이게 "look left → return to center"가 right로 잘못 발화되는 걸 막아준다.
     if (this.enabled && this.armed && ts - this.lastTriggerAt > this.cooldownMs) {
       if (dir !== "·") {
         this.armed = false;
@@ -238,8 +257,8 @@ export class EyeTracker {
       }
     }
 
-    // ---- 5) 재무장: 양 축 모두 baseline 근처로 돌아와야 함.
-    if (!this.armed && absX < this.rearmThreshold && absY < this.rearmThreshold) {
+    // ---- 5) 재무장: 양 축 각각 자기 스케일의 rearm 임계값 안으로 들어와야.
+    if (!this.armed && absX < this.rearmThresholdX && absY < this.rearmThresholdY) {
       this.armed = true;
     }
   }
