@@ -5,6 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <title>Without Finger</title>
 
+  <!-- 부트 클린업: 옛 SW/캐시가 stuck 상태일 때 한 번만 reload로 회복.
+       APP_VERSION 바꿀 때마다 다시 발동. sessionStorage flag로 무한루프 방지. -->
+  <script>
+    (function () {
+      var APP_VERSION = "v4-2026-05-03";
+      var prev = null;
+      try { prev = localStorage.getItem("wf-app-version"); } catch (_) {}
+      if (prev === APP_VERSION) return;
+
+      var done = false;
+      try { done = sessionStorage.getItem("wf-cleanup-done") === APP_VERSION; } catch (_) {}
+      if (done) {
+        try { localStorage.setItem("wf-app-version", APP_VERSION); } catch (_) {}
+        return;
+      }
+
+      var promises = [];
+      if ("serviceWorker" in navigator) {
+        promises.push(
+          navigator.serviceWorker.getRegistrations().then(function (regs) {
+            return Promise.all(regs.map(function (r) { return r.unregister(); }));
+          }).catch(function () {})
+        );
+      }
+      if (window.caches && caches.keys) {
+        promises.push(
+          caches.keys().then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          }).catch(function () {})
+        );
+      }
+      Promise.all(promises).then(function () {
+        try { sessionStorage.setItem("wf-cleanup-done", APP_VERSION); } catch (_) {}
+        location.reload();
+      });
+    })();
+  </script>
+
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="WithoutFinger">
@@ -47,6 +85,7 @@
         💡 홈 화면에 추가하면 풀스크린 앱처럼 동작합니다.<br>
         Safari → 공유 → "홈 화면에 추가"
       </small>
+      <small class="version" id="version">v4</small>
     </div>
   </section>
 

@@ -42,12 +42,20 @@ const EYE = {
 };
 
 // ---------- YouTube IFrame ----------
+// race condition 방어: iframe_api가 우리 핸들러보다 먼저 콜백 호출했을 수도 있음.
+if (typeof YT !== "undefined" && YT.Player) {
+  ytApiReady = true;
+}
 window.onYouTubeIframeAPIReady = () => { ytApiReady = true; };
 function waitForYT() {
   if (ytApiReady) return Promise.resolve();
   return new Promise((resolve) => {
     const t = setInterval(() => {
-      if (ytApiReady) { clearInterval(t); resolve(); }
+      if (ytApiReady || (typeof YT !== "undefined" && YT.Player)) {
+        ytApiReady = true;
+        clearInterval(t);
+        resolve();
+      }
     }, 50);
   });
 }
