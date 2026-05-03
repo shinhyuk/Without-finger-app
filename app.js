@@ -34,12 +34,11 @@ let lastFrameTs = 0;
 const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
 
-// MediaPipe FaceMesh refineLandmarks=true 인덱스
+// MediaPipe FaceMesh refineLandmarks=true 인덱스.
+// 윗/아랫눈꺼풀 점은 시선 따라 같이 움직여서 세로 변위 기준으로 못 씀 → corner만 사용.
 const EYE = {
-  // 좌안 (사용자 왼쪽 눈)
-  L_OUTER: 33, L_INNER: 133, L_TOP: 159, L_BOT: 145, L_IRIS: 468,
-  // 우안
-  R_OUTER: 263, R_INNER: 362, R_TOP: 386, R_BOT: 374, R_IRIS: 473,
+  L_OUTER: 33, L_INNER: 133, L_IRIS: 468,
+  R_OUTER: 263, R_INNER: 362, R_IRIS: 473,
 };
 
 // ---------- YouTube IFrame ----------
@@ -239,22 +238,19 @@ async function initFaceMesh() {
   await withTimeout(faceMesh.send({ image: camEl }), 60000, "FaceMesh 첫 추론");
 }
 
-// 한 눈에 대해 (iris - 중심) / 반축길이 = -1..+1 정규 변위.
-// x: 카메라 image 좌표는 mirror된 사용자 시선과 반대지만 좌/우안 모두
-//    "사용자가 왼쪽을 보면" iris가 image의 더 큰 x로 이동 → disp 양수.
-function dispX(outerIdx, innerIdx, irisIdx, lm) {
-  const a = lm[outerIdx].x, b = lm[innerIdx].x;
-  const center = (a + b) / 2;
-  const half = Math.abs(a - b) / 2;
-  if (half < 0.001) return 0;
-  return (lm[irisIdx].x - center) / half;
-}
-function dispY(topIdx, botIdx, irisIdx, lm) {
-  const a = lm[topIdx].y, b = lm[botIdx].y;
-  const center = (a + b) / 2;
-  const half = Math.abs(b - a) / 2;
-  if (half < 0.001) return 0;
-  return (lm[irisIdx].y - center) / half;
+// 눈 양 끝(outer/inner corner)의 중점을 안구 중심 기준으로,
+// 두 corner 사이 거리의 절반을 정규화 단위로 사용.
+// 눈꺼풀 점을 안 쓰는 이유: 아래를 볼 때 윗눈꺼풀이 같이 내려와서 "눈 중심"이
+// iris보다 더 내려가 변위 부호가 뒤집히고(↓를 ↑로 오인), 위를 볼 때는 변위가
+// 작아져 임계값을 못 넘김. corner는 시선 따라 안 움직이므로 안정적.
+const Y_GAIN = 1.6; // 세로 iris 가동 범위가 가로보다 좁아서 보정.
+function eyeGaze(outerIdx, innerIdx, irisIdx, lm) {
+  const o = lm[outerIdx], i = lm[innerIdx], r = lm[irisIdx];
+  const cx = (o.x + i.x) / 2;
+  const cy = (o.y + i.y) / 2;
+  const half = Math.hypot(o.x - i.x, o.y - i.y) / 2;
+  if (half < 0.001) return { x: 0, y: 0 };
+  return { x: (r.x - cx) / half, y: ((r.y - cy) / half) * Y_GAIN };
 }
 
 function fmtSigned(v) {
@@ -269,13 +265,10 @@ function handleResults(results) {
   }
   const lm = results.multiFaceLandmarks[0];
 
-  const dxL = dispX(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm);
-  const dxR = dispX(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm);
-  const gazeX = (dxL + dxR) / 2; // +: 사용자가 왼쪽을 봄 / -: 오른쪽
-
-  const dyL = dispY(EYE.L_TOP, EYE.L_BOT, EYE.L_IRIS, lm);
-  const dyR = dispY(EYE.R_TOP, EYE.R_BOT, EYE.R_IRIS, lm);
-  const gazeY = (dyL + dyR) / 2; // +: 아래 / -: 위
+  const gL = eyeGaze(EYE.L_OUTER, EYE.L_INNER, EYE.L_IRIS, lm);
+  const gR = eyeGaze(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, lm);
+  const gazeX = (gL.x + gR.x) / 2; // +: 사용자가 왼쪽을 봄 / -: 오른쪽
+  const gazeY = (gL.y + gR.y) / 2; // +: 아래 / -: 위
 
   const absX = Math.abs(gazeX);
   const absY = Math.abs(gazeY);
