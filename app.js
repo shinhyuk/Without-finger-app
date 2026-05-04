@@ -41,11 +41,11 @@ const BASELINE_ALPHA = 0.01;
 let lastFaceTs = 0;
 const FACE_LOST_RESET_MS = 1500;
 
-// 머리 pitch(끄덕임) 신호를 eye gaze Y와 합쳐 사용.
-// 이유: 사용자가 위/아래를 볼 때 보통 머리도 같이 기울이는데, 머리 기울임만으로는
-// iris와 eye corner가 함께 움직여 gazeY가 거의 변하지 않음. 머리 pitch를 보조
-// 신호로 더해주면 머리 끄덕임으로도 트리거 가능.
-const PITCH_SCALE = 6;
+// 머리 pitch(끄덕임)와 eye gaze Y를 모두 받되 SUM이 아닌 MAX(절댓값) 으로 결합.
+// 이유: 머리만 끄덕이면 VOR(전정안반사)로 눈은 화면 유지 위해 반대로 보정 → eye gaze Y와
+// pitch가 부호 반대로 나와 SUM시 서로 상쇄돼 0 근처로 깎임. MAX는 상쇄 없이 강한 신호가
+// 살아남음. 둘 중 어느 쪽이든 임계값 넘으면 트리거.
+const PITCH_SCALE = 7;
 
 const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
@@ -326,9 +326,10 @@ function handleResults(results) {
   // 베이스라인 빼서 "중립 = 0" 좌표계로. +: 사용자 왼쪽 / 아래.
   const adjX = gazeX - baselineX;
   const adjGazeY = gazeY - baselineY;
-  const adjPitch = pitch - basePitch;
-  // 머리 끄덕임만으로도 트리거되도록 eye gaze Y와 pitch를 합산.
-  const adjY = adjGazeY + adjPitch * PITCH_SCALE;
+  const rawPitchDev = pitch - basePitch;
+  const adjPitch = rawPitchDev * PITCH_SCALE;
+  // VOR로 두 신호가 반대 부호로 상쇄될 수 있어 SUM 대신 절댓값 큰 쪽 채택.
+  const adjY = Math.abs(adjGazeY) > Math.abs(adjPitch) ? adjGazeY : adjPitch;
   const absX = Math.abs(adjX);
   const absY = Math.abs(adjY);
 
@@ -345,7 +346,8 @@ function handleResults(results) {
   else if (xTrig) dir = xTrig;
   else if (yTrig) dir = yTrig;
 
-  rawEl.textContent = `X${fmtSigned(adjX)} Y${fmtSigned(adjY)} ${dir}`;
+  // 디버그 가독성: 어느 신호가 트리거에 기여하는지 보이도록 eye/pitch 분리 표시.
+  rawEl.textContent = `X${fmtSigned(adjX)} eY${fmtSigned(adjGazeY)} pY${fmtSigned(adjPitch)} ${dir}`;
   dotEl.classList.toggle("active", dir !== "·");
 
   const ts = performance.now();
@@ -361,11 +363,11 @@ function handleResults(results) {
     }
   }
 
-  // 중립 구간에서만 베이스라인 천천히 갱신.
+  // 중립 구간에서만 베이스라인 천천히 갱신 (raw 단위로).
   if (absX < rearmThreshold && absY < rearmThreshold) {
     baselineX += BASELINE_ALPHA * adjX;
     baselineY += BASELINE_ALPHA * adjGazeY;
-    basePitch += BASELINE_ALPHA * adjPitch;
+    basePitch += BASELINE_ALPHA * rawPitchDev;
   }
 
   // 축 별로 중립 복귀 시 재무장.
