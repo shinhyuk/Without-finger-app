@@ -33,14 +33,19 @@ let lastFrameTs = 0;
 
 // 시선 베이스라인 자동 보정.
 // 카메라 각도/얼굴 비대칭 때문에 "정면 응시" 시 gazeX/gazeY가 0이 아닌 경우가 많음.
-// 특히 Y는 베이스라인이 위쪽으로 치우쳐있으면 위 보기가 임계값 안 넘어 트리거 안 됨.
 // 시작 시 N프레임 평균을 베이스라인으로, 이후 중립 구간에서 천천히 드리프트.
-let baselineX = 0, baselineY = 0;
+let baselineX = 0, baselineY = 0, basePitch = 0;
 let calibFrames = 0;
 const CALIB_FRAMES = 30;
 const BASELINE_ALPHA = 0.01;
 let lastFaceTs = 0;
 const FACE_LOST_RESET_MS = 1500;
+
+// 머리 pitch(끄덕임)와 eye gaze Y를 모두 받되 SUM이 아닌 MAX(절댓값) 으로 결합.
+// 이유: 머리만 끄덕이면 VOR(전정안반사)로 눈은 화면 유지 위해 반대로 보정 → eye gaze Y와
+// pitch가 부호 반대로 나와 SUM시 서로 상쇄돼 0 근처로 깎임. MAX는 상쇄 없이 강한 신호가
+// 살아남음. 둘 중 어느 쪽이든 임계값 넘으면 트리거.
+const PITCH_SCALE = 7;
 
 const MP_VERSION = "0.4.1633559619";
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${MP_VERSION}`;
@@ -272,6 +277,20 @@ function eyeGaze(outerIdx, innerIdx, irisIdx, ringIdxs, lm) {
   return { x: (r.x - cx) / halfX, y: (r.y - cy) / radY };
 }
 
+// 머리 pitch: 코 끝(1)과 양 눈 corner 평균 y의 차이를 두 눈 거리로 정규화.
+// 정면 응시 시 baseline ≈ +0.4 (코가 눈 아래 있으니까).
+// 머리 숙이면 foreshortening으로 코가 눈에 가까워짐 → 값 감소 (위쪽).
+// 머리 들면 코가 더 아래로 보임 → 값 증가 (아래쪽).
+// 우리 컨벤션 (+ = 아래)와 일치하므로 그대로 합산.
+function headPitch(lm) {
+  const lo = lm[33], li = lm[133], ro = lm[263], ri = lm[362];
+  const eyeMidY = (lo.y + li.y + ro.y + ri.y) / 4;
+  const eyeWidth = Math.hypot(ro.x - lo.x, ro.y - lo.y);
+  const nose = lm[1];
+  if (eyeWidth < 0.001) return 0;
+  return (nose.y - eyeMidY) / eyeWidth;
+}
+
 function fmtSigned(v) {
   return (v >= 0 ? "+" : "") + v.toFixed(2);
 }
@@ -279,7 +298,7 @@ function fmtSigned(v) {
 function handleResults(results) {
   if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
     if (lastFaceTs > 0 && performance.now() - lastFaceTs > FACE_LOST_RESET_MS) {
-      calibFrames = 0; baselineX = 0; baselineY = 0;
+      calibFrames = 0; baselineX = 0; baselineY = 0; basePitch = 0;
     }
     rawEl.textContent = "얼굴 미검출";
     dotEl.classList.remove("active");
@@ -292,33 +311,43 @@ function handleResults(results) {
   const gR = eyeGaze(EYE.R_OUTER, EYE.R_INNER, EYE.R_IRIS, EYE.R_IRIS_RING, lm);
   const gazeX = (gL.x + gR.x) / 2; // image 기준 raw 시선 변위
   const gazeY = (gL.y + gR.y) / 2;
+  const pitch = headPitch(lm);
 
   if (calibFrames < CALIB_FRAMES) {
     baselineX = (baselineX * calibFrames + gazeX) / (calibFrames + 1);
     baselineY = (baselineY * calibFrames + gazeY) / (calibFrames + 1);
+    basePitch = (basePitch * calibFrames + pitch) / (calibFrames + 1);
     calibFrames++;
     rawEl.textContent = `정면 응시 보정중 ${calibFrames}/${CALIB_FRAMES}`;
     dotEl.classList.remove("active");
     return;
   }
 
-  // 베이스라인 빼서 "중립 = 0" 좌표계로 변환. +: 사용자가 왼쪽 / 아래.
+  // 베이스라인 빼서 "중립 = 0" 좌표계로. +: 사용자 왼쪽 / 아래.
   const adjX = gazeX - baselineX;
-  const adjY = gazeY - baselineY;
+  const adjGazeY = gazeY - baselineY;
+  const rawPitchDev = pitch - basePitch;
+  const adjPitch = rawPitchDev * PITCH_SCALE;
+  // VOR로 두 신호가 반대 부호로 상쇄될 수 있어 SUM 대신 절댓값 큰 쪽 채택.
+  const adjY = Math.abs(adjGazeY) > Math.abs(adjPitch) ? adjGazeY : adjPitch;
   const absX = Math.abs(adjX);
   const absY = Math.abs(adjY);
 
-  // 두 축이 동시에 임계값 넘으면 더 큰 쪽으로만 분기.
+  // 각 축 독립적으로 임계값 검사 (이전 winner-takes-all은 X 노이즈가 Y 트리거를 막음).
+  let xTrig = "";
+  if (adjX > triggerThreshold) xTrig = "←";
+  else if (adjX < -triggerThreshold) xTrig = "→";
+  let yTrig = "";
+  if (adjY < -triggerThreshold) yTrig = "↑";
+  else if (adjY > triggerThreshold) yTrig = "↓";
+  // 두 축 모두 트리거되면 절댓값 큰 쪽이 우선.
   let dir = "·";
-  if (absX > absY) {
-    if (adjX > triggerThreshold) dir = "←";
-    else if (adjX < -triggerThreshold) dir = "→";
-  } else {
-    if (adjY < -triggerThreshold) dir = "↑";
-    else if (adjY > triggerThreshold) dir = "↓";
-  }
+  if (xTrig && yTrig) dir = absX > absY ? xTrig : yTrig;
+  else if (xTrig) dir = xTrig;
+  else if (yTrig) dir = yTrig;
 
-  rawEl.textContent = `${fmtSigned(adjX)} ${fmtSigned(adjY)} ${dir}`;
+  // 디버그 가독성: 어느 신호가 트리거에 기여하는지 보이도록 eye/pitch 분리 표시.
+  rawEl.textContent = `X${fmtSigned(adjX)} eY${fmtSigned(adjGazeY)} pY${fmtSigned(adjPitch)} ${dir}`;
   dotEl.classList.toggle("active", dir !== "·");
 
   const ts = performance.now();
@@ -334,10 +363,11 @@ function handleResults(results) {
     }
   }
 
-  // 중립 구간에서만 베이스라인 천천히 갱신 — 사용자가 시선 유지중일 때 드리프트 방지.
+  // 중립 구간에서만 베이스라인 천천히 갱신 (raw 단위로).
   if (absX < rearmThreshold && absY < rearmThreshold) {
     baselineX += BASELINE_ALPHA * adjX;
-    baselineY += BASELINE_ALPHA * adjY;
+    baselineY += BASELINE_ALPHA * adjGazeY;
+    basePitch += BASELINE_ALPHA * rawPitchDev;
   }
 
   // 축 별로 중립 복귀 시 재무장.
@@ -407,7 +437,7 @@ function triggerVolDown() {
 
 function cleanup() {
   stopFlag = true;
-  calibFrames = 0; baselineX = 0; baselineY = 0; lastFaceTs = 0;
+  calibFrames = 0; baselineX = 0; baselineY = 0; basePitch = 0; lastFaceTs = 0;
   if (stream) {
     stream.getTracks().forEach((t) => t.stop());
     stream = null;
